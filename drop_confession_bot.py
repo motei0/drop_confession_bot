@@ -227,14 +227,36 @@ async def delete_from_admin(callback: CallbackQuery):
     await callback.message.delete() # Удаляет сообщение с кнопкой из чата
     await callback.answer("Исповедь удалена из базы!")
 
-async def main():
-  bot = Bot(token=TOKEN)
-  dp = Dispatcher()
-  dp.include_router(router)
-  await bot.delete_webhook(drop_pending_updates=True)
-  await dp.start_polling(bot)
+import os
+from fastapi import FastAPI
+import uvicorn
+import asyncio
 
+# Создаем простой веб-сервер для Render, чтобы он не усыплял сервис
+app = FastAPI()
+
+@app.get("/")
+def index():
+    return {"status": "Bot is running!"}
+
+# Функция для запуска веб-сервера параллельно с ботом
+async def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+async def main():
+    bot = Bot(token=TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Запускаем поллинг бота и веб-сервер вместе
+    await asyncio.gather(
+        dp.start_polling(bot),
+        run_web()
+    )
 
 if __name__ == "__main__":
-  asyncio.run(main())
-  
+    asyncio.run(main())
