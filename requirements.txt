@@ -1,1 +1,3 @@
-aiogram
+aiogramaiogram
+fastapi
+uvicorn
