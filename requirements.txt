@@ -1,5 +1,4 @@
 aiogram
 fastapi
 uvicorn
-aiopg
-psycopg2-binary
+asyncpg
