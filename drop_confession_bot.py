@@ -204,7 +204,7 @@ def get_feed_keyboard(conf_id: int, likes: int, cringe: int):
         ]
     )
 
-# Просмотр ленты (строго по текстовой кнопке из меню, без дублей)
+# Просмотр ленты (клик по кнопке меню)
 @router.message(F.text == "📖 Читать ленту")
 async def read_feed_msg(message: Message, state: FSMContext):
     await state.clear()
@@ -227,10 +227,14 @@ async def read_feed_msg(message: Message, state: FSMContext):
         parse_mode="HTML",
     )
 
-# Навигация: Следующая история (кнопка вперед)
+# Навигация: Следующая история (идем к более старым по ID)
 @router.callback_query(F.data.startswith("feed_next_"))
 async def feed_next(callback: CallbackQuery):
-    current_id = int(callback.data.split("_")[2])
+    try:
+        current_id = int(callback.data.split("_")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка навигации!", show_alert=True)
+        return
     
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -239,6 +243,7 @@ async def feed_next(callback: CallbackQuery):
                 (current_id,)
             )
             row = cur.fetchone()
+            
             if not row:
                 cur.execute(
                     "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 1"
@@ -256,14 +261,19 @@ async def feed_next(callback: CallbackQuery):
             reply_markup=get_feed_keyboard(conf_id, likes, cringe),
             parse_mode="HTML",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Edit text error (next): {e}")
+    
     await callback.answer()
 
-# Навигация: Предыдущая история (кнопка назад)
+# Навигация: Предыдущая история (идем к более новым по ID)
 @router.callback_query(F.data.startswith("feed_prev_"))
 async def feed_prev(callback: CallbackQuery):
-    current_id = int(callback.data.split("_")[2])
+    try:
+        current_id = int(callback.data.split("_")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка навигации!", show_alert=True)
+        return
     
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -272,6 +282,7 @@ async def feed_prev(callback: CallbackQuery):
                 (current_id,)
             )
             row = cur.fetchone()
+            
             if not row:
                 cur.execute(
                     "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id ASC LIMIT 1"
@@ -289,16 +300,21 @@ async def feed_prev(callback: CallbackQuery):
             reply_markup=get_feed_keyboard(conf_id, likes, cringe),
             parse_mode="HTML",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Edit text error (prev): {e}")
+        
     await callback.answer()
 
 # Обработка реакций (Лайк / Кринж)
 @router.callback_query(F.data.startswith(("like_", "cringe_")))
 async def process_reaction(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    action = parts[0]
-    conf_id = int(parts[1])
+    try:
+        parts = callback.data.split("_")
+        action = parts[0]
+        conf_id = int(parts[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка реакции!", show_alert=True)
+        return
     
     col = "likes" if action == "like" else "cringe"
     
@@ -319,8 +335,8 @@ async def process_reaction(callback: CallbackQuery):
             reply_markup=get_feed_keyboard(conf_id, likes, cringe),
             parse_mode="HTML",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Edit text error (reaction): {e}")
     
     await callback.answer("Реакция учтена!")
 
