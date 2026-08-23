@@ -10,7 +10,7 @@ from fastapi import FastAPI
 import uvicorn
 
 TOKEN = "8926289462:AAEzYTMq_DdzNER_4AVMKVn1fC0vI2GKI2U"
-ADMIN_ID = 1449427026  # Твой Telegram ID для модерации.
+ADMIN_ID = 1449427026  # Твой Telegram ID для модерации
 
 # Подключение к Neon.tech через переменную окружения DATABASE_URL в Render
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -42,25 +42,43 @@ class ConfessionState(StatesGroup):
 
 router = Router()
 
-# Стартовое меню
-@router.message(CommandStart())
-async def cmd_start(message: Message):
-    keyboard = InlineKeyboardMarkup(
+# Главное меню (вынесено в отдельную функцию для удобства)
+def get_main_menu():
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🤫 Написать исповедь", callback_data="write")],
             [InlineKeyboardButton(text="📖 Читать ленту", callback_data="read_feed")],
         ]
     )
+
+# Стартовое меню / Команда /start
+@router.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(
-        "Привет! Это анонимная исповедальня. Здесь можно высказаться или почитать чужие секреты.\n\nНикто и никогда не узнает, кто автор.",
-        reply_markup=keyboard,
+        "Привет! Это анонимная исповедальня. Здесь можно высказаться или почитать чужие секреты.\n\nНикто и никогда не узнает, кто автор. Выбери действие ниже:",
+        reply_markup=get_main_menu(),
     )
+
+# Кнопка «Главное меню» (возврат в любой момент)
+@router.callback_query(F.data == "main_menu")
+async def back_to_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "Главное меню. Выбери, что хочешь сделать:",
+        reply_markup=get_main_menu()
+    )
+    await callback.answer()
 
 # Нажатие на «Написать исповедь»
 @router.callback_query(F.data == "write")
 async def start_writing(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer(
-        "Напиши свою историю, секрет или факап одним сообщением. Как только модератор ее проверит, она попадет в ленту."
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="main_menu")]
+    ])
+    await callback.message.edit_text(
+        "Напиши свою историю, секрет или факап одним сообщением. Как только модератор ее проверит, она попадет в ленту.",
+        reply_markup=kb
     )
     await state.set_state(ConfessionState.waiting_for_text)
     await callback.answer()
@@ -81,8 +99,11 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
             conn.commit()
 
     await state.clear()
+    
+    # Отправляем подтверждение пользователю с кнопкой возврата в меню
     await message.answer(
-        "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте."
+        "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
+        reply_markup=get_main_menu()
     )
 
     # Отправка админу на проверку
@@ -164,9 +185,15 @@ async def read_feed(callback: CallbackQuery):
             row = cur.fetchone()
 
     if not row:
-        await callback.answer(
-            "В ленте пока нет историй. Стань первым!", show_alert=True
+        kb_empty = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Написать первой", callback_data="write")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+        ])
+        await callback.message.edit_text(
+            "В ленте пока нет историй. Стань первым!",
+            reply_markup=kb_empty
         )
+        await callback.answer()
         return
 
     conf_id, text = row
@@ -174,6 +201,7 @@ async def read_feed(callback: CallbackQuery):
         inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed")],
             [InlineKeyboardButton(text="✍️ Написать свою", callback_data="write")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
         ]
     )
 
