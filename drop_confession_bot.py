@@ -103,7 +103,7 @@ async def start_writing_text(message: Message, state: FSMContext):
 # Выбор категории
 @router.callback_query(F.data.startswith("cat_"))
 async def process_category(callback: CallbackQuery, state: FSMContext):
-    action = callback.data.split("_")[1]
+    action = callback.data.split("_", 1)[1]
     
     if action == "cancel":
         await state.clear()
@@ -115,7 +115,8 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    await state.update_data(category=action)
+    # Надежно сохраняем категорию в стейт
+    await state.set_data({"category": action})
     await state.set_state(ConfessionState.waiting_for_text)
     
     try:
@@ -146,15 +147,21 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     category = data.get("category", "Факап")
 
-    # Сохраняем в PostgreSQL
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO confessions (user_id, category, text) VALUES (%s, %s, %s) RETURNING id",
-                (message.from_user.id, category, text),
-            )
-            conf_id = cur.fetchone()[0]
-            conn.commit()
+    # Сохраняем в PostgreSQL с защитой от падений
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO confessions (user_id, category, text) VALUES (%s, %s, %s) RETURNING id",
+                    (message.from_user.id, category, text),
+                )
+                conf_id = cur.fetchone()[0]
+                conn.commit()
+    except Exception as e:
+        print(f"DB Error: {e}")
+        await message.answer("❌ Произошла ошибка при сохранении в базу. Попробуй еще раз /start", reply_markup=get_main_menu())
+        await state.clear()
+        return
 
     await state.clear()
     
@@ -172,12 +179,15 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
             ]
         ]
     )
-    await bot.send_message(
-        ADMIN_ID,
-        f"<b>Новая исповедь #{conf_id} [{category}]:</b>\n\n{text}",
-        reply_markup=admin_kb,
-        parse_mode="HTML",
-    )
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"<b>Новая исповедь #{conf_id} [{category}]:</b>\n\n{text}",
+            reply_markup=admin_kb,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        print(f"Admin send error: {e}")
 
 # Модерация: Одобрить
 @router.callback_query(F.data.startswith("approve_"))
