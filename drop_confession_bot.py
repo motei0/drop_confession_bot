@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup, KeyboardButton
 from fastapi import FastAPI
 import uvicorn
 
@@ -42,31 +42,40 @@ class ConfessionState(StatesGroup):
 
 router = Router()
 
-# Нижняя клавиатура (меню)
-def get_reply_menu():
+# Главное нижнее меню (2 кнопки)
+def get_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🤫 Написать исповедь"), KeyboardButton(text="📖 Читать ленту")]
         ],
-        resize_keyboard=True  # Делает кнопки аккуратными по размеру
+        resize_keyboard=True
     )
 
-# Стартовое меню
+# Нижнее меню во время написания (с кнопкой отмены)
+def get_cancel_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="❌ Отменить")]
+        ],
+        resize_keyboard=True
+    )
+
+# Стартовое меню / команда /start и кнопка отмены
+@router.message(F.text == "❌ Отменить")
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "Привет! Это анонимная исповедальня. Здесь можно высказаться или почитать чужие секреты.\n\nНикто и никогда не узнает, кто автор.",
-        reply_markup=get_reply_menu(),
+        reply_markup=get_main_menu(),
     )
 
 # Нажатие на кнопку «Написать исповедь» из нижнего меню
 @router.message(F.text == "🤫 Написать исповедь")
 async def start_writing_text(message: Message, state: FSMContext):
-    # Убираем нижнюю клавиатуру на время ввода, чтобы не мешала
     await message.answer(
         "Напиши свою историю, секрет или факап одним сообщением. Как только модератор ее проверит, она попадет в ленту.",
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=get_cancel_menu()
     )
     await state.set_state(ConfessionState.waiting_for_text)
 
@@ -87,13 +96,13 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
 
     await state.clear()
     
-    # Возвращаем нижнее меню обратно
+    # Возвращаем стандартное нижнее меню
     await message.answer(
         "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
-        reply_markup=get_reply_menu()
+        reply_markup=get_main_menu()
     )
 
-    # Отправка админу на проверку (админка остается на инлайн-кнопках)
+    # Отправка админу на проверку (админка на инлайн-кнопках)
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -172,7 +181,7 @@ async def read_feed_msg(message: Message):
             row = cur.fetchone()
 
     if not row:
-        await message.answer("В ленте пока нет историй. Стань первым!", reply_markup=get_reply_menu())
+        await message.answer("В ленте пока нет историй. Стань первым!", reply_markup=get_main_menu())
         return
 
     conf_id, text = row
