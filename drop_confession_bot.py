@@ -1,4 +1,5 @@
 import os
+import html
 import asyncio
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
@@ -113,6 +114,9 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
         reply_markup=get_main_menu()
     )
 
+    # Экранируем текст для безопасной отправки админу через HTML
+    safe_text_for_admin = html.escape(text)
+
     # Отправка админу на проверку
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -125,7 +129,7 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"<b>Новая исповедь #{conf_id}:</b>\n\n{text}",
+            f"<b>Новая исповедь #{conf_id}:</b>\n\n{safe_text_for_admin}",
             reply_markup=admin_kb,
             parse_mode="HTML",
         )
@@ -218,8 +222,10 @@ async def read_feed_msg(message: Message, state: FSMContext):
         return
 
     conf_id, text = row
+    safe_text = html.escape(text)  # Защита от поломки HTML-разметки
+    
     await message.answer(
-        f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
+        f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
         reply_markup=get_feed_keyboard(conf_id),
         parse_mode="HTML",
     )
@@ -253,9 +259,11 @@ async def feed_next(callback: CallbackQuery):
         return
 
     conf_id, text = row
+    safe_text = html.escape(text)  # Экранирование спецсимволов
+    
     try:
         await callback.message.edit_text(
-            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
+            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
             reply_markup=get_feed_keyboard(conf_id),
             parse_mode="HTML",
         )
@@ -292,9 +300,11 @@ async def feed_prev(callback: CallbackQuery):
         return
 
     conf_id, text = row
+    safe_text = html.escape(text)  # Экранирование спецсимволов
+    
     try:
         await callback.message.edit_text(
-            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
+            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
             reply_markup=get_feed_keyboard(conf_id),
             parse_mode="HTML",
         )
@@ -319,10 +329,11 @@ async def admin_panel(message: Message):
 
     for conf_id, text in rows:
         display_text = (text[:30] + '..') if len(text) > 30 else text
+        safe_display = html.escape(display_text)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_{conf_id}")]
         ])
-        await message.answer(f"#{conf_id}: {display_text}", reply_markup=kb)
+        await message.answer(f"#{conf_id}: {safe_display}", parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("del_"))
 async def delete_from_admin(callback: CallbackQuery):
