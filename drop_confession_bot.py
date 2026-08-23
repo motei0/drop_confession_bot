@@ -115,8 +115,8 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    # Надежно сохраняем категорию в стейт
-    await state.set_data({"category": action})
+    # Безопасно обновляем данные стейта, не затирая другие поля
+    await state.update_data(category=action)
     await state.set_state(ConfessionState.waiting_for_text)
     
     try:
@@ -147,7 +147,7 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     category = data.get("category", "Факап")
 
-    # Сохраняем в PostgreSQL с защитой от падений
+    # Сохраняем в PostgreSQL
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
