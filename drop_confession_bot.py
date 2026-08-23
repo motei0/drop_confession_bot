@@ -115,15 +115,22 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await callback.answer()
-
+    
 # Получение и валидация текста исповеди
 @router.message(ConfessionState.waiting_for_text)
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
     text = message.text
     
-    if len(text) < 10:
-        await message.answer("⚠️ Текст слишком короткий! Напиши чуть подробнее (минимум 10 символов).")
+    # Если пользователь нажал кнопку отмены во время ввода
+    if text == "❌ Отменить":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=get_main_menu())
         return
+
+    if len(text) < 10:
+        await message.answer("⚠️ Текст слишком короткий! Напиши чуть подробнее (минимум 10 символов). Состояние сохранено, попробуй еще раз:")
+        return  # Обязательно оставляем State активным, не вызывая state.clear()
+        
     if len(text) > 1000:
         await message.answer("⚠️ Текст слишком длинный! Сократи его до 1000 символов.")
         return
@@ -131,6 +138,38 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     category = data.get("category", "Факап")
 
+    # Сохраняем в PostgreSQL
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO confessions (user_id, category, text) VALUES (%s, %s, %s) RETURNING id",
+                (message.from_user.id, category, text),
+            )
+            conf_id = cur.fetchone()[0]
+            conn.commit()
+
+    await state.clear()
+    
+    await message.answer(
+        "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
+        reply_markup=get_main_menu()
+    )
+
+    # Админ-панель проверки
+    admin_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{conf_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{conf_id}"),
+            ]
+        ]
+    )
+    await bot.send_message(
+        ADMIN_ID,
+        f"<b>Новая исповедь #{conf_id} [{category}]:</b>\n\n{text}",
+        reply_markup=admin_kb,
+        parse_mode="HTML",
+    )
     # Сохраняем в PostgreSQL
     with get_db() as conn:
         with conn.cursor() as cur:
