@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from fastapi import FastAPI
 import uvicorn
 
@@ -42,46 +42,33 @@ class ConfessionState(StatesGroup):
 
 router = Router()
 
-# Главное меню (вынесено в отдельную функцию для удобства)
-def get_main_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🤫 Написать исповедь", callback_data="write")],
-            [InlineKeyboardButton(text="📖 Читать ленту", callback_data="read_feed")],
-        ]
+# Нижняя клавиатура (меню)
+def get_reply_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🤫 Написать исповедь"), KeyboardButton(text="📖 Читать ленту")]
+        ],
+        resize_keyboard=True  # Делает кнопки аккуратными по размеру
     )
 
-# Стартовое меню / Команда /start
+# Стартовое меню
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Привет! Это анонимная исповедальня. Здесь можно высказаться или почитать чужие секреты.\n\nНикто и никогда не узнает, кто автор. Выбери действие ниже:",
-        reply_markup=get_main_menu(),
+        "Привет! Это анонимная исповедальня. Здесь можно высказаться или почитать чужие секреты.\n\nНикто и никогда не узнает, кто автор.",
+        reply_markup=get_reply_menu(),
     )
 
-# Кнопка «Главное меню» (возврат в любой момент)
-@router.callback_query(F.data == "main_menu")
-async def back_to_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text(
-        "Главное меню. Выбери, что хочешь сделать:",
-        reply_markup=get_main_menu()
-    )
-    await callback.answer()
-
-# Нажатие на «Написать исповедь»
-@router.callback_query(F.data == "write")
-async def start_writing(callback: CallbackQuery, state: FSMContext):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Отмена", callback_data="main_menu")]
-    ])
-    await callback.message.edit_text(
+# Нажатие на кнопку «Написать исповедь» из нижнего меню
+@router.message(F.text == "🤫 Написать исповедь")
+async def start_writing_text(message: Message, state: FSMContext):
+    # Убираем нижнюю клавиатуру на время ввода, чтобы не мешала
+    await message.answer(
         "Напиши свою историю, секрет или факап одним сообщением. Как только модератор ее проверит, она попадет в ленту.",
-        reply_markup=kb
+        reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(ConfessionState.waiting_for_text)
-    await callback.answer()
 
 # Получение текста исповеди от пользователя
 @router.message(ConfessionState.waiting_for_text)
@@ -100,13 +87,13 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
 
     await state.clear()
     
-    # Отправляем подтверждение пользователю с кнопкой возврата в меню
+    # Возвращаем нижнее меню обратно
     await message.answer(
         "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
-        reply_markup=get_main_menu()
+        reply_markup=get_reply_menu()
     )
 
-    # Отправка админу на проверку
+    # Отправка админу на проверку (админка остается на инлайн-кнопках)
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -174,9 +161,9 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             
     await callback.answer("Исповедь отклонена.")
 
-# Просмотр ленты
-@router.callback_query(F.data == "read_feed")
-async def read_feed(callback: CallbackQuery):
+# Просмотр ленты по нажатию на нижнюю кнопку
+@router.message(F.text == "📖 Читать ленту")
+async def read_feed_msg(message: Message):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -185,38 +172,48 @@ async def read_feed(callback: CallbackQuery):
             row = cur.fetchone()
 
     if not row:
-        kb_empty = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✍️ Написать первой", callback_data="write")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
-        ])
-        await callback.message.edit_text(
-            "В ленте пока нет историй. Стань первым!",
-            reply_markup=kb_empty
-        )
-        await callback.answer()
+        await message.answer("В ленте пока нет историй. Стань первым!", reply_markup=get_reply_menu())
         return
 
     conf_id, text = row
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed")],
-            [InlineKeyboardButton(text="✍️ Написать свою", callback_data="write")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
+            [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed_next")],
         ]
     )
 
-    try:
-        await callback.message.edit_text(
-            f"🤫 **Исповедь #{conf_id}**\n\n{text}",
-            reply_markup=kb,
-            parse_mode="Markdown",
-        )
-    except Exception:
-        await callback.message.answer(
-            f"🤫 **Исповедь #{conf_id}**\n\n{text}",
-            reply_markup=kb,
-            parse_mode="Markdown",
-        )
+    await message.answer(
+        f"🤫 **Исповедь #{conf_id}**\n\n{text}",
+        reply_markup=kb,
+        parse_mode="Markdown",
+    )
+
+# Кнопка «Следующая история» внутри ленты
+@router.callback_query(F.data == "read_feed_next")
+async def read_feed_next(callback: CallbackQuery):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
+            )
+            row = cur.fetchone()
+
+    if not row:
+        await callback.answer("Больше историй пока нет!", show_alert=True)
+        return
+
+    conf_id, text = row
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed_next")],
+        ]
+    )
+
+    await callback.message.edit_text(
+        f"🤫 **Исповедь #{conf_id}**\n\n{text}",
+        reply_markup=kb,
+        parse_mode="Markdown",
+    )
     await callback.answer()
 
 # Админ-панель
