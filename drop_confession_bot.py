@@ -60,8 +60,13 @@ def get_cancel_menu():
         resize_keyboard=True
     )
 
-# Стартовое меню / команда /start и кнопка отмены
+# Кнопка отмены
 @router.message(F.text == "❌ Отменить")
+async def cancel_writing(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=get_main_menu())
+
+# Команда /start
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -73,26 +78,32 @@ async def cmd_start(message: Message, state: FSMContext):
 # Нажатие на кнопку «Написать исповедь» из нижнего меню
 @router.message(F.text == "🤫 Написать исповедь")
 async def start_writing_text(message: Message, state: FSMContext):
+    await state.set_state(ConfessionState.waiting_for_text)
     await message.answer(
         "Напиши свою историю, секрет или факап одним сообщением. Как только модератор ее проверит, она попадет в ленту.",
         reply_markup=get_cancel_menu()
     )
-    await state.set_state(ConfessionState.waiting_for_text)
 
 # Получение текста исповеди от пользователя
 @router.message(ConfessionState.waiting_for_text)
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
     text = message.text
 
-    # Сохраняем в PostgreSQL (Neon)
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO confessions (user_id, text) VALUES (%s, %s) RETURNING id",
-                (message.from_user.id, text),
-            )
-            conf_id = cur.fetchone()[0]
-            conn.commit()
+    # Безопасное сохранение в PostgreSQL (Neon) с отловом ошибок
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO confessions (user_id, text) VALUES (%s, %s) RETURNING id",
+                    (message.from_user.id, text),
+                )
+                conf_id = cur.fetchone()[0]
+                conn.commit()
+    except Exception as e:
+        print(f"DB Error: {e}")
+        await message.answer("❌ Произошла ошибка при сохранении в базу. Попробуй еще раз /start", reply_markup=get_main_menu())
+        await state.clear()
+        return
 
     await state.clear()
     
@@ -102,7 +113,7 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
         reply_markup=get_main_menu()
     )
 
-    # Отправка админу на проверку (админка на инлайн-кнопках)
+    # Отправка админу на проверку
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -111,12 +122,15 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
             ]
         ]
     )
-    await bot.send_message(
-        ADMIN_ID,
-        f"<b>Новая исповедь #{conf_id}:</b>\n\n{text}",
-        reply_markup=admin_kb,
-        parse_mode="HTML",
-    )
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"<b>Новая исповедь #{conf_id}:</b>\n\n{text}",
+            reply_markup=admin_kb,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        print(f"Admin send error: {e}")
 
 # Модерация: Одобрить
 @router.callback_query(F.data.startswith("approve_"))
@@ -132,9 +146,12 @@ async def approve_confession(callback: CallbackQuery, bot: Bot):
             cur.execute("UPDATE confessions SET status = 'approved' WHERE id = %s", (conf_id,))
             conn.commit()
 
-    await callback.message.edit_text(
-        f"{callback.message.text}\n\n<b>[ОДОБРЕНО]</b>", parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\n<b>[ОДОБРЕНО]</b>", parse_mode="HTML"
+        )
+    except Exception:
+        pass
     
     if user_id:
         try:
@@ -158,9 +175,12 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             cur.execute("UPDATE confessions SET status = 'rejected' WHERE id = %s", (conf_id,))
             conn.commit()
 
-    await callback.message.edit_text(
-        f"{callback.message.text}\n\n<b>[ОТКЛОНЕНО]</b>", parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\n<b>[ОТКЛОНЕНО]</b>", parse_mode="HTML"
+        )
+    except Exception:
+        pass
     
     if user_id:
         try:
@@ -170,7 +190,7 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             
     await callback.answer("Исповедь отклонена.")
 
-# Просмотр ленты по нажатию на нижнюю кнопку
+# Просмотр ленты
 @router.message(F.text == "📖 Читать ленту")
 async def read_feed_msg(message: Message):
     with get_db() as conn:
@@ -192,12 +212,12 @@ async def read_feed_msg(message: Message):
     )
 
     await message.answer(
-        f"🤫 **Исповедь #{conf_id}**\n\n{text}",
+        f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
         reply_markup=kb,
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
-# Кнопка «Следующая история» внутри ленты
+# Кнопка «Следующая история»
 @router.callback_query(F.data == "read_feed_next")
 async def read_feed_next(callback: CallbackQuery):
     with get_db() as conn:
@@ -218,11 +238,14 @@ async def read_feed_next(callback: CallbackQuery):
         ]
     )
 
-    await callback.message.edit_text(
-        f"🤫 **Исповедь #{conf_id}**\n\n{text}",
-        reply_markup=kb,
-        parse_mode="Markdown",
-    )
+    try:
+        await callback.message.edit_text(
+            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
     await callback.answer()
 
 # Админ-панель
@@ -254,7 +277,10 @@ async def delete_from_admin(callback: CallbackQuery):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM confessions WHERE id = %s", (conf_id,))
             conn.commit()
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.answer("Исповедь удалена из базы!")
 
 app = FastAPI()
