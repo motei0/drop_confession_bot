@@ -91,7 +91,6 @@ async def start_writing_text(message: Message, state: FSMContext):
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
     text = message.text
 
-    # Безопасное сохранение в PostgreSQL (Neon) с отловом ошибок
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -109,13 +108,11 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
 
     await state.clear()
     
-    # Возвращаем стандартное нижнее меню
     await message.answer(
         "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
         reply_markup=get_main_menu()
     )
 
-    # Отправка админу на проверку
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -207,10 +204,11 @@ def get_feed_keyboard(conf_id: int, likes: int, cringe: int):
         ]
     )
 
-# Просмотр ленты (клик по кнопке меню)
+# Просмотр ленты (строго по текстовой кнопке из меню, без дублей)
 @router.message(F.text == "📖 Читать ленту")
 async def read_feed_msg(message: Message, state: FSMContext):
     await state.clear()
+    
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -219,7 +217,7 @@ async def read_feed_msg(message: Message, state: FSMContext):
             row = cur.fetchone()
 
     if not row:
-        await message.answer("В ленте пока нет историй. Стань первым!", reply_markup=get_main_menu())
+        await message.answer("В ленте пока нет одобренных историй. Стань первым!", reply_markup=get_main_menu())
         return
 
     conf_id, text, likes, cringe = row
@@ -229,7 +227,7 @@ async def read_feed_msg(message: Message, state: FSMContext):
         parse_mode="HTML",
     )
 
-# Навигация: Следующая история (кнопка вперед по ID)
+# Навигация: Следующая история (кнопка вперед)
 @router.callback_query(F.data.startswith("feed_next_"))
 async def feed_next(callback: CallbackQuery):
     current_id = int(callback.data.split("_")[2])
@@ -262,7 +260,7 @@ async def feed_next(callback: CallbackQuery):
         pass
     await callback.answer()
 
-# Навигация: Предыдущая история (кнопка назад по ID)
+# Навигация: Предыдущая история (кнопка назад)
 @router.callback_query(F.data.startswith("feed_prev_"))
 async def feed_prev(callback: CallbackQuery):
     current_id = int(callback.data.split("_")[2])
