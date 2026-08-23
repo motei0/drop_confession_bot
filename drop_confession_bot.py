@@ -192,7 +192,7 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             
     await callback.answer("Исповедь отклонена.")
 
-# Генерация клавиатуры для ленты (реакции + навигация)
+# Генерация клавиатуры для истории (реакции + навигация)
 def get_feed_keyboard(conf_id: int, likes: int, cringe: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -202,18 +202,19 @@ def get_feed_keyboard(conf_id: int, likes: int, cringe: int):
             ],
             [
                 InlineKeyboardButton(text="⬅️ Назад", callback_data=f"feed_prev_{conf_id}"),
-                InlineKeyboardButton(text="🔄 Следующая", callback_data=f"feed_next_{conf_id}")
+                InlineKeyboardButton(text="Следующая ➡️", callback_data=f"feed_next_{conf_id}")
             ]
         ]
     )
 
-# Просмотр ленты (первое открытие)
+# Просмотр ленты (клик по кнопке меню)
 @router.message(F.text == "📖 Читать ленту")
-async def read_feed_msg(message: Message):
+async def read_feed_msg(message: Message, state: FSMContext):
+    await state.clear()
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
+                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 1"
             )
             row = cur.fetchone()
 
@@ -228,27 +229,26 @@ async def read_feed_msg(message: Message):
         parse_mode="HTML",
     )
 
-# Навигация: Следующая история
+# Навигация: Следующая история (кнопка вперед по ID)
 @router.callback_query(F.data.startswith("feed_next_"))
 async def feed_next(callback: CallbackQuery):
     current_id = int(callback.data.split("_")[2])
     
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Ищем историю с ID больше текущего, либо самую первую (циклично)
             cur.execute(
-                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' AND id > %s ORDER BY id ASC LIMIT 1",
+                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' AND id < %s ORDER BY id DESC LIMIT 1",
                 (current_id,)
             )
             row = cur.fetchone()
             if not row:
                 cur.execute(
-                    "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id ASC LIMIT 1"
+                    "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 1"
                 )
                 row = cur.fetchone()
 
     if not row:
-        await callback.answer("Больше историй пока нет!", show_alert=True)
+        await callback.answer("Больше историй нет!", show_alert=True)
         return
 
     conf_id, text, likes, cringe = row
@@ -262,27 +262,26 @@ async def feed_next(callback: CallbackQuery):
         pass
     await callback.answer()
 
-# Навигация: Предыдущая история
+# Навигация: Предыдущая история (кнопка назад по ID)
 @router.callback_query(F.data.startswith("feed_prev_"))
 async def feed_prev(callback: CallbackQuery):
     current_id = int(callback.data.split("_")[2])
     
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Ищем историю с ID меньше текущего, либо самую последнюю (циклично)
             cur.execute(
-                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' AND id < %s ORDER BY id DESC LIMIT 1",
+                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' AND id > %s ORDER BY id ASC LIMIT 1",
                 (current_id,)
             )
             row = cur.fetchone()
             if not row:
                 cur.execute(
-                    "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 1"
+                    "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id ASC LIMIT 1"
                 )
                 row = cur.fetchone()
 
     if not row:
-        await callback.answer("Больше историй пока нет!", show_alert=True)
+        await callback.answer("Больше историй нет!", show_alert=True)
         return
 
     conf_id, text, likes, cringe = row
