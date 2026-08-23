@@ -20,7 +20,7 @@ if DATABASE_URL and "?" not in DATABASE_URL:
 def get_db():
     return psycopg2.connect(DATABASE_URL)
 
-# Инициализация таблиц в PostgreSQL на старте (с учетом реакций и категорий)
+# Инициализация таблиц в PostgreSQL на старте
 def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -75,8 +75,13 @@ def get_categories_kb():
         ]
     )
 
-# Стартовое меню / отмена
+# Универсальная кнопка отмены (работает всегда)
 @router.message(F.text == "❌ Отменить")
+async def cancel_anytime(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=get_main_menu())
+
+# Команда /start
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -93,7 +98,6 @@ async def start_writing_text(message: Message, state: FSMContext):
         reply_markup=get_categories_kb()
     )
     await state.set_state(ConfessionState.waiting_for_category)
-    # Меняем нижнюю клавиатуру на отмену
     await message.answer("Или нажми кнопку отмены ниже:", reply_markup=get_cancel_menu())
 
 # Выбор категории
@@ -103,73 +107,45 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     
     if action == "cancel":
         await state.clear()
-        await callback.message.delete()
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         await callback.message.answer("Отменено.", reply_markup=get_main_menu())
+        await callback.answer()
         return
 
     await state.update_data(category=action)
     await state.set_state(ConfessionState.waiting_for_text)
     
-    await callback.message.edit_text(
-        f"Категория выбрана: <b>{action}</b>\n\nТеперь напиши свою историю одним сообщением (от 10 до 1000 символов):",
-        parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_text(
+            f"Категория выбрана: <b>{action}</b>\n\nТеперь напиши свою историю одним сообщением (от 10 до 1000 символов):",
+            parse_mode="HTML"
+        )
+    except Exception:
+        await callback.message.answer(
+            f"Категория выбрана: <b>{action}</b>\n\nТеперь напиши свою историю одним сообщением (от 10 до 1000 символов):",
+            parse_mode="HTML"
+        )
     await callback.answer()
-    
+
 # Получение и валидация текста исповеди
 @router.message(ConfessionState.waiting_for_text)
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
     text = message.text
     
-    # Если пользователь нажал кнопку отмены во время ввода
-    if text == "❌ Отменить":
-        await state.clear()
-        await message.answer("Отменено.", reply_markup=get_main_menu())
-        return
-
     if len(text) < 10:
-        await message.answer("⚠️ Текст слишком короткий! Напиши чуть подробнее (минимум 10 символов). Состояние сохранено, попробуй еще раз:")
-        return  # Обязательно оставляем State активным, не вызывая state.clear()
+        await message.answer("⚠️ Текст слишком короткий! Напиши чуть подробнее (минимум 10 символов):")
+        return  
         
     if len(text) > 1000:
-        await message.answer("⚠️ Текст слишком длинный! Сократи его до 1000 символов.")
+        await message.answer("⚠️ Текст слишком длинный! Сократи его до 1000 символов:")
         return
 
     data = await state.get_data()
     category = data.get("category", "Факап")
 
-    # Сохраняем в PostgreSQL
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO confessions (user_id, category, text) VALUES (%s, %s, %s) RETURNING id",
-                (message.from_user.id, category, text),
-            )
-            conf_id = cur.fetchone()[0]
-            conn.commit()
-
-    await state.clear()
-    
-    await message.answer(
-        "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
-        reply_markup=get_main_menu()
-    )
-
-    # Админ-панель проверки
-    admin_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{conf_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{conf_id}"),
-            ]
-        ]
-    )
-    await bot.send_message(
-        ADMIN_ID,
-        f"<b>Новая исповедь #{conf_id} [{category}]:</b>\n\n{text}",
-        reply_markup=admin_kb,
-        parse_mode="HTML",
-    )
     # Сохраняем в PostgreSQL
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -217,9 +193,12 @@ async def approve_confession(callback: CallbackQuery, bot: Bot):
             cur.execute("UPDATE confessions SET status = 'approved' WHERE id = %s", (conf_id,))
             conn.commit()
 
-    await callback.message.edit_text(
-        f"{callback.message.text}\n\n<b>[ОДОБРЕНО]</b>", parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\n<b>[ОДОБРЕНО]</b>", parse_mode="HTML"
+        )
+    except Exception:
+        pass
     
     if user_id:
         try:
@@ -243,9 +222,12 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             cur.execute("UPDATE confessions SET status = 'rejected' WHERE id = %s", (conf_id,))
             conn.commit()
 
-    await callback.message.edit_text(
-        f"{callback.message.text}\n\n<b>[ОТКЛОНЕНО]</b>", parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\n<b>[ОТКЛОНЕНО]</b>", parse_mode="HTML"
+        )
+    except Exception:
+        pass
     
     if user_id:
         try:
@@ -390,7 +372,10 @@ async def delete_from_admin(callback: CallbackQuery):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM confessions WHERE id = %s", (conf_id,))
             conn.commit()
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.answer("Исповедь удалена из базы!")
 
 app = FastAPI()
