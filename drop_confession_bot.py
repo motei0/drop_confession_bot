@@ -20,7 +20,7 @@ if DATABASE_URL and "?" not in DATABASE_URL:
 def get_db():
     return psycopg2.connect(DATABASE_URL)
 
-# Инициализация таблиц в PostgreSQL на старте
+# Инициализация таблицы в PostgreSQL на старте
 def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -28,24 +28,21 @@ def init_db():
             CREATE TABLE IF NOT EXISTS confessions (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT,
-                category TEXT DEFAULT 'Общее',
                 text TEXT,
-                status TEXT DEFAULT 'pending',
-                likes INTEGER DEFAULT 0,
-                cringe INTEGER DEFAULT 0
+                status TEXT DEFAULT 'pending'
             )
             """)
             conn.commit()
 
 init_db()
 
-# Состояния FSM
+# Состояния FSM для отправки исповеди
 class ConfessionState(StatesGroup):
     waiting_for_text = State()
 
 router = Router()
 
-# Главное нижнее меню
+# Главное нижнее меню (2 кнопки)
 def get_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -54,7 +51,7 @@ def get_main_menu():
         resize_keyboard=True
     )
 
-# Нижнее меню с кнопкой отмены
+# Нижнее меню во время написания (с кнопкой отмены)
 def get_cancel_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -63,13 +60,8 @@ def get_cancel_menu():
         resize_keyboard=True
     )
 
-# Универсальная кнопка отмены (работает всегда)
+# Стартовое меню / команда /start и кнопка отмены
 @router.message(F.text == "❌ Отменить")
-async def cancel_anytime(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Действие отменено.", reply_markup=get_main_menu())
-
-# Команда /start
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -78,44 +70,39 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=get_main_menu(),
     )
 
-# Нажатие на «Написать исповедь»
+# Нажатие на кнопку «Написать исповедь» из нижнего меню
 @router.message(F.text == "🤫 Написать исповедь")
 async def start_writing_text(message: Message, state: FSMContext):
-    await state.set_state(ConfessionState.waiting_for_text)
     await message.answer(
-        "Напиши свою историю одним сообщением:",
+        "Напиши свою историю, секрет или факап одним сообщением. Как только модератор ее проверит, она попадет в ленту.",
         reply_markup=get_cancel_menu()
     )
+    await state.set_state(ConfessionState.waiting_for_text)
 
-# Получение и запись текста (без ограничений)
+# Получение текста исповеди от пользователя
 @router.message(ConfessionState.waiting_for_text)
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
     text = message.text
 
-    # Сохраняем в PostgreSQL
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO confessions (user_id, category, text) VALUES (%s, %s, %s) RETURNING id",
-                    (message.from_user.id, "Общее", text),
-                )
-                conf_id = cur.fetchone()[0]
-                conn.commit()
-    except Exception as e:
-        print(f"DB Error: {e}")
-        await message.answer("❌ Произошла ошибка при сохранении в базу. Попробуй еще раз /start", reply_markup=get_main_menu())
-        await state.clear()
-        return
+    # Сохраняем в PostgreSQL (Neon)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO confessions (user_id, text) VALUES (%s, %s) RETURNING id",
+                (message.from_user.id, text),
+            )
+            conf_id = cur.fetchone()[0]
+            conn.commit()
 
     await state.clear()
     
+    # Возвращаем стандартное нижнее меню
     await message.answer(
         "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
         reply_markup=get_main_menu()
     )
 
-    # Админ-панель проверки
+    # Отправка админу на проверку (админка на инлайн-кнопках)
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -124,15 +111,12 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
             ]
         ]
     )
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"<b>Новая исповедь #{conf_id}:</b>\n\n{text}",
-            reply_markup=admin_kb,
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        print(f"Admin send error: {e}")
+    await bot.send_message(
+        ADMIN_ID,
+        f"<b>Новая исповедь #{conf_id}:</b>\n\n{text}",
+        reply_markup=admin_kb,
+        parse_mode="HTML",
+    )
 
 # Модерация: Одобрить
 @router.callback_query(F.data.startswith("approve_"))
@@ -148,12 +132,9 @@ async def approve_confession(callback: CallbackQuery, bot: Bot):
             cur.execute("UPDATE confessions SET status = 'approved' WHERE id = %s", (conf_id,))
             conn.commit()
 
-    try:
-        await callback.message.edit_text(
-            f"{callback.message.text}\n\n<b>[ОДОБРЕНО]</b>", parse_mode="HTML"
-        )
-    except Exception:
-        pass
+    await callback.message.edit_text(
+        f"{callback.message.text}\n\n<b>[ОДОБРЕНО]</b>", parse_mode="HTML"
+    )
     
     if user_id:
         try:
@@ -177,12 +158,9 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             cur.execute("UPDATE confessions SET status = 'rejected' WHERE id = %s", (conf_id,))
             conn.commit()
 
-    try:
-        await callback.message.edit_text(
-            f"{callback.message.text}\n\n<b>[ОТКЛОНЕНО]</b>", parse_mode="HTML"
-        )
-    except Exception:
-        pass
+    await callback.message.edit_text(
+        f"{callback.message.text}\n\n<b>[ОТКЛОНЕНО]</b>", parse_mode="HTML"
+    )
     
     if user_id:
         try:
@@ -192,13 +170,13 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             
     await callback.answer("Исповедь отклонена.")
 
-# Просмотр ленты
+# Просмотр ленты по нажатию на нижнюю кнопку
 @router.message(F.text == "📖 Читать ленту")
 async def read_feed_msg(message: Message):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
+                "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
             )
             row = cur.fetchone()
 
@@ -206,70 +184,26 @@ async def read_feed_msg(message: Message):
         await message.answer("В ленте пока нет историй. Стань первым!", reply_markup=get_main_menu())
         return
 
-    conf_id, text, likes, cringe = row
+    conf_id, text = row
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text=f"🔥 {likes}", callback_data=f"like_{conf_id}"),
-                InlineKeyboardButton(text=f"🤡 {cringe}", callback_data=f"cringe_{conf_id}")
-            ],
             [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed_next")],
         ]
     )
 
     await message.answer(
-        f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
+        f"🤫 **Исповедь #{conf_id}**\n\n{text}",
         reply_markup=kb,
-        parse_mode="HTML",
+        parse_mode="Markdown",
     )
 
-# Обработка реакций (Лайк / Кринж)
-@router.callback_query(F.data.startswith(("like_", "cringe_")))
-async def process_reaction(callback: CallbackQuery):
-    action, conf_id_str = callback.data.split("_")
-    conf_id = int(conf_id_str)
-    
-    col = "likes" if action == "like" else "cringe"
-    
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"UPDATE confessions SET {col} = {col} + 1 WHERE id = %s RETURNING likes, cringe, text", (conf_id,))
-            row = cur.fetchone()
-            conn.commit()
-
-    if not row:
-        await callback.answer("История не найдена!", show_alert=True)
-        return
-
-    likes, cringe, text = row
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=f"🔥 {likes}", callback_data=f"like_{conf_id}"),
-                InlineKeyboardButton(text=f"🤡 {cringe}", callback_data=f"cringe_{conf_id}")
-            ],
-            [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed_next")],
-        ]
-    )
-
-    try:
-        await callback.message.edit_text(
-            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
-            reply_markup=kb,
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    
-    await callback.answer("Принято!")
-
-# Следующая история по кнопке
+# Кнопка «Следующая история» внутри ленты
 @router.callback_query(F.data == "read_feed_next")
 async def read_feed_next(callback: CallbackQuery):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
+                "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
             )
             row = cur.fetchone()
 
@@ -277,25 +211,18 @@ async def read_feed_next(callback: CallbackQuery):
         await callback.answer("Больше историй пока нет!", show_alert=True)
         return
 
-    conf_id, text, likes, cringe = row
+    conf_id, text = row
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text=f"🔥 {likes}", callback_data=f"like_{conf_id}"),
-                InlineKeyboardButton(text=f"🤡 {cringe}", callback_data=f"cringe_{conf_id}")
-            ],
             [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed_next")],
         ]
     )
 
-    try:
-        await callback.message.edit_text(
-            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
-            reply_markup=kb,
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
+    await callback.message.edit_text(
+        f"🤫 **Исповедь #{conf_id}**\n\n{text}",
+        reply_markup=kb,
+        parse_mode="Markdown",
+    )
     await callback.answer()
 
 # Админ-панель
@@ -327,10 +254,7 @@ async def delete_from_admin(callback: CallbackQuery):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM confessions WHERE id = %s", (conf_id,))
             conn.commit()
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
+    await callback.message.delete()
     await callback.answer("Исповедь удалена из базы!")
 
 app = FastAPI()
