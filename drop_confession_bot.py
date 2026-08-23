@@ -10,7 +10,7 @@ from fastapi import FastAPI
 import uvicorn
 
 TOKEN = "8926289462:AAEzYTMq_DdzNER_4AVMKVn1fC0vI2GKI2U"
-ADMIN_ID = 1449427026  # Твой Telegram ID для модерации
+ADMIN_ID = 1449427026  # Твой Telegram ID для модерации.
 
 # Подключение к Neon.tech через переменную окружения DATABASE_URL в Render
 DATABASE_URL = os.environ.get("DATABASE_URL")
