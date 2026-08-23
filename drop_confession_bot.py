@@ -29,9 +29,7 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT,
                 text TEXT,
-                status TEXT DEFAULT 'pending',
-                likes INTEGER DEFAULT 0,
-                cringe INTEGER DEFAULT 0
+                status TEXT DEFAULT 'pending'
             )
             """)
             conn.commit()
@@ -91,6 +89,7 @@ async def start_writing_text(message: Message, state: FSMContext):
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
     text = message.text
 
+    # Безопасное сохранение в PostgreSQL (Neon) с отловом ошибок
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -108,11 +107,13 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
 
     await state.clear()
     
+    # Возвращаем стандартное нижнее меню
     await message.answer(
         "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
         reply_markup=get_main_menu()
     )
 
+    # Отправка админу на проверку
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -189,156 +190,63 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             
     await callback.answer("Исповедь отклонена.")
 
-# Генерация клавиатуры для истории (реакции + навигация)
-def get_feed_keyboard(conf_id: int, likes: int, cringe: int):
-    return InlineKeyboardMarkup(
+# Просмотр ленты
+@router.message(F.text == "📖 Читать ленту")
+async def read_feed_msg(message: Message):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
+            )
+            row = cur.fetchone()
+
+    if not row:
+        await message.answer("В ленте пока нет историй. Стань первым!", reply_markup=get_main_menu())
+        return
+
+    conf_id, text = row
+    kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text=f"🔥 {likes}", callback_data=f"like_{conf_id}"),
-                InlineKeyboardButton(text=f"🤡 {cringe}", callback_data=f"cringe_{conf_id}")
-            ],
-            [
-                InlineKeyboardButton(text="⬅️ Назад", callback_data=f"feed_prev_{conf_id}"),
-                InlineKeyboardButton(text="Следующая ➡️", callback_data=f"feed_next_{conf_id}")
-            ]
+            [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed_next")],
         ]
     )
 
-# Просмотр ленты (клик по кнопке меню)
-@router.message(F.text == "📖 Читать ленту")
-async def read_feed_msg(message: Message, state: FSMContext):
-    await state.clear()
-    
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 1"
-            )
-            row = cur.fetchone()
-
-    if not row:
-        await message.answer("В ленте пока нет одобренных историй. Стань первым!", reply_markup=get_main_menu())
-        return
-
-    conf_id, text, likes, cringe = row
     await message.answer(
         f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
-        reply_markup=get_feed_keyboard(conf_id, likes, cringe),
+        reply_markup=kb,
         parse_mode="HTML",
     )
 
-# Навигация: Следующая история (идем к более старым по ID)
-@router.callback_query(F.data.startswith("feed_next_"))
-async def feed_next(callback: CallbackQuery):
-    try:
-        current_id = int(callback.data.split("_")[2])
-    except (IndexError, ValueError):
-        await callback.answer("Ошибка навигации!", show_alert=True)
-        return
-    
+# Кнопка «Следующая история»
+@router.callback_query(F.data == "read_feed_next")
+async def read_feed_next(callback: CallbackQuery):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' AND id < %s ORDER BY id DESC LIMIT 1",
-                (current_id,)
+                "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
             )
             row = cur.fetchone()
-            
-            if not row:
-                cur.execute(
-                    "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 1"
-                )
-                row = cur.fetchone()
 
     if not row:
-        await callback.answer("Больше историй нет!", show_alert=True)
+        await callback.answer("Больше историй пока нет!", show_alert=True)
         return
 
-    conf_id, text, likes, cringe = row
+    conf_id, text = row
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Следующая история", callback_data="read_feed_next")],
+        ]
+    )
+
     try:
         await callback.message.edit_text(
             f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
-            reply_markup=get_feed_keyboard(conf_id, likes, cringe),
+            reply_markup=kb,
             parse_mode="HTML",
         )
-    except Exception as e:
-        print(f"Edit text error (next): {e}")
-    
+    except Exception:
+        pass
     await callback.answer()
-
-# Навигация: Предыдущая история (идем к более новым по ID)
-@router.callback_query(F.data.startswith("feed_prev_"))
-async def feed_prev(callback: CallbackQuery):
-    try:
-        current_id = int(callback.data.split("_")[2])
-    except (IndexError, ValueError):
-        await callback.answer("Ошибка навигации!", show_alert=True)
-        return
-    
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' AND id > %s ORDER BY id ASC LIMIT 1",
-                (current_id,)
-            )
-            row = cur.fetchone()
-            
-            if not row:
-                cur.execute(
-                    "SELECT id, text, likes, cringe FROM confessions WHERE status = 'approved' ORDER BY id ASC LIMIT 1"
-                )
-                row = cur.fetchone()
-
-    if not row:
-        await callback.answer("Больше историй нет!", show_alert=True)
-        return
-
-    conf_id, text, likes, cringe = row
-    try:
-        await callback.message.edit_text(
-            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
-            reply_markup=get_feed_keyboard(conf_id, likes, cringe),
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        print(f"Edit text error (prev): {e}")
-        
-    await callback.answer()
-
-# Обработка реакций (Лайк / Кринж)
-@router.callback_query(F.data.startswith(("like_", "cringe_")))
-async def process_reaction(callback: CallbackQuery):
-    try:
-        parts = callback.data.split("_")
-        action = parts[0]
-        conf_id = int(parts[1])
-    except (IndexError, ValueError):
-        await callback.answer("Ошибка реакции!", show_alert=True)
-        return
-    
-    col = "likes" if action == "like" else "cringe"
-    
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"UPDATE confessions SET {col} = {col} + 1 WHERE id = %s RETURNING likes, cringe, text", (conf_id,))
-            row = cur.fetchone()
-            conn.commit()
-
-    if not row:
-        await callback.answer("История не найдена!", show_alert=True)
-        return
-
-    likes, cringe, text = row
-    try:
-        await callback.message.edit_text(
-            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{text}",
-            reply_markup=get_feed_keyboard(conf_id, likes, cringe),
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        print(f"Edit text error (reaction): {e}")
-    
-    await callback.answer("Реакция учтена!")
 
 # Админ-панель
 @router.message(Command(commands=["admin"]))
