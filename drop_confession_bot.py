@@ -37,13 +37,12 @@ def init_db():
 
 init_db()
 
-# Состояния FSM для отправки исповеди
+# Состояния FSM
 class ConfessionState(StatesGroup):
     waiting_for_text = State()
 
 router = Router()
 
-# Главное нижнее меню (2 кнопки)
 def get_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -52,7 +51,6 @@ def get_main_menu():
         resize_keyboard=True
     )
 
-# Нижнее меню во время написания (с кнопкой отмены)
 def get_cancel_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -61,13 +59,11 @@ def get_cancel_menu():
         resize_keyboard=True
     )
 
-# Кнопка отмены
 @router.message(F.text == "❌ Отменить")
 async def cancel_writing(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Действие отменено.", reply_markup=get_main_menu())
 
-# Команда /start
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -76,7 +72,6 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=get_main_menu(),
     )
 
-# Нажатие на кнопку «Написать исповедь» из нижнего меню
 @router.message(F.text == "🤫 Написать исповедь")
 async def start_writing_text(message: Message, state: FSMContext):
     await state.set_state(ConfessionState.waiting_for_text)
@@ -85,16 +80,12 @@ async def start_writing_text(message: Message, state: FSMContext):
         reply_markup=get_cancel_menu()
     )
 
-# Получение текста исповеди от пользователя
 @router.message(ConfessionState.waiting_for_text)
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
     text = message.text
     user_id = message.from_user.id
-    
-    # Достаем юзернейм (если есть)
     username = f"@{message.from_user.username}" if message.from_user.username else "Отсутствует"
 
-    # Безопасное сохранение в PostgreSQL (Neon) с отловом ошибок
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -111,17 +102,12 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
         return
 
     await state.clear()
-    
-    # Возвращаем стандартное нижнее меню
     await message.answer(
         "✅ Твоя исповедь отправлена на модерацию! Скоро она появится в ленте.",
         reply_markup=get_main_menu()
     )
 
-    # Экранируем текст для безопасной отправки админу через HTML
     safe_text_for_admin = html.escape(text)
-
-    # Отправка админу на проверку (включая юзернейм и ID автора)
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -143,7 +129,6 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     except Exception as e:
         print(f"Admin send error: {e}")
 
-# Модерация: Одобрить
 @router.callback_query(F.data.startswith("approve_"))
 async def approve_confession(callback: CallbackQuery, bot: Bot):
     conf_id = int(callback.data.split("_")[1])
@@ -158,9 +143,7 @@ async def approve_confession(callback: CallbackQuery, bot: Bot):
             conn.commit()
 
     try:
-        await callback.message.edit_text(
-            f"{callback.message.text}\n\n<b>[ОДОБРЕНО]</b>", parse_mode="HTML"
-        )
+        await callback.message.edit_text(f"{callback.message.text}\n\n<b>[ОДОБРЕНО]</b>", parse_mode="HTML")
     except Exception:
         pass
     
@@ -172,7 +155,6 @@ async def approve_confession(callback: CallbackQuery, bot: Bot):
             
     await callback.answer("Исповедь опубликована!")
 
-# Модерация: Отклонить
 @router.callback_query(F.data.startswith("reject_"))
 async def reject_confession(callback: CallbackQuery, bot: Bot):
     conf_id = int(callback.data.split("_")[1])
@@ -187,9 +169,7 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             conn.commit()
 
     try:
-        await callback.message.edit_text(
-            f"{callback.message.text}\n\n<b>[ОТКЛОНЕНО]</b>", parse_mode="HTML"
-        )
+        await callback.message.edit_text(f"{callback.message.text}\n\n<b>[ОТКЛОНЕНО]</b>", parse_mode="HTML")
     except Exception:
         pass
     
@@ -201,27 +181,22 @@ async def reject_confession(callback: CallbackQuery, bot: Bot):
             
     await callback.answer("Исповедь отклонена.")
 
-# Функция генерации клавиатуры для ленты с перелистыванием
-def get_feed_keyboard(conf_id: int):
+def get_feed_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="⬅️ Назад", callback_data=f"feed_prev_{conf_id}"),
-                InlineKeyboardButton(text="Вперед ➡️", callback_data=f"feed_next_{conf_id}")
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="feed_prev"),
+                InlineKeyboardButton(text="Вперед ➡️", callback_data="feed_next")
             ]
         ]
     )
 
-# Просмотр ленты (открывает случайную одобренную историю)
+# Открытие ленты (сбрасываем историю просмотров в FSM и берем первую рандомную)
 @router.message(F.text == "📖 Читать ленту")
 async def read_feed_msg(message: Message, state: FSMContext):
-    await state.clear()
-    
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
-            )
+            cur.execute("SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1")
             row = cur.fetchone()
 
     if not row:
@@ -229,99 +204,118 @@ async def read_feed_msg(message: Message, state: FSMContext):
         return
 
     conf_id, text = row
-    safe_text = html.escape(text)  # Защита от поломки HTML-разметки
     
+    # Сохраняем сессию просмотра в FSM
+    await state.set_data({
+        "viewed_history": [conf_id],  # Список просмотренных ID по порядку
+        "current_index": 0           # Текущая позиция в этом списке
+    })
+
+    safe_text = html.escape(text)
     await message.answer(
         f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
-        reply_markup=get_feed_keyboard(conf_id),
+        reply_markup=get_feed_keyboard(),
         parse_mode="HTML",
     )
 
-# Перелистывание: Следующая случайная история (исключая текущую)
-@router.callback_query(F.data.startswith("feed_next_"))
-async def feed_next(callback: CallbackQuery):
-    try:
-        current_id = int(callback.data.split("_")[2])
-    except (IndexError, ValueError):
-        await callback.answer("Ошибка навигации!", show_alert=True)
-        return
-    
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            # Берем случайную, но стараемся не показывать ту же самую сразу, если в базе больше 1 истории
-            cur.execute(
-                "SELECT id, text FROM confessions WHERE status = 'approved' AND id != %s ORDER BY RANDOM() LIMIT 1",
-                (current_id,)
-            )
-            row = cur.fetchone()
-            
-            # Если в базе всего 1 история, показываем её же
-            if not row:
-                cur.execute(
-                    "SELECT id, text FROM confessions WHERE status = 'approved' AND id = %s",
-                    (current_id,)
-                )
+# Кнопка «Вперед» (следующая случайная история без повторов)
+@router.callback_query(F.data == "feed_next")
+async def feed_next(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    viewed = data.get("viewed_history", [])
+    index = data.get("current_index", 0)
+
+    # Если мы уже в самом конце истории просмотров — ищем новую рандомную, которой еще не было
+    if index >= len(viewed) - 1:
+        if not viewed:
+            viewed = []
+            index = -1
+
+        # Формируем запрос с исключением уже показанных ID
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                if viewed:
+                    format_strings = ','.join(['%s'] * len(viewed))
+                    query = f"SELECT id, text FROM confessions WHERE status = 'approved' AND id NOT IN ({format_strings}) ORDER BY RANDOM() LIMIT 1"
+                    cur.execute(query, tuple(viewed))
+                else:
+                    cur.execute("SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1")
+                
                 row = cur.fetchone()
 
-    if not row:
-        await callback.answer("Больше историй нет!", show_alert=True)
-        return
+        if not row:
+            await callback.answer("🎉 Ты просмотрел все доступные истории в этой сессии!", show_alert=True)
+            return
 
-    conf_id, text = row
-    safe_text = html.escape(text)  # Экранирование спецсимволов
-    
+        conf_id, text = row
+        viewed.append(conf_id)
+        index = len(viewed) - 1
+    else:
+        # Если пользователь уже листал назад и теперь идет вперед по уже просмотренным
+        index += 1
+        conf_id = viewed[index]
+        
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT text FROM confessions WHERE id = %s", (conf_id,))
+                row = cur.fetchone()
+        
+        if not row:
+            await callback.answer("Ошибка истории!", show_alert=True)
+            return
+        text = row[0]
+
+    await state.update_data(viewed_history=viewed, current_index=index)
+    safe_text = html.escape(text)
+
     try:
         await callback.message.edit_text(
             f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
-            reply_markup=get_feed_keyboard(conf_id),
+            reply_markup=get_feed_keyboard(),
             parse_mode="HTML",
         )
     except Exception:
         pass
     await callback.answer()
 
-# Перелистывание: Предыдущая случайная история (исключая текущую)
-@router.callback_query(F.data.startswith("feed_prev_"))
-async def feed_prev(callback: CallbackQuery):
-    try:
-        current_id = int(callback.data.split("_")[2])
-    except (IndexError, ValueError):
-        await callback.answer("Ошибка навигации!", show_alert=True)
+# Кнопка «Назад» (возврат к уже просмотренным ранее историям)
+@router.callback_query(F.data == "feed_prev")
+async def feed_prev(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    viewed = data.get("viewed_history", [])
+    index = data.get("current_index", 0)
+
+    # Если двигаться назад больше некуда
+    if index <= 0 or not viewed:
+        await callback.answer("⚠️ Это первая история в текущем просмотре, дальше назад нельзя.", show_alert=True)
         return
-    
+
+    index -= 1
+    conf_id = viewed[index]
+
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, text FROM confessions WHERE status = 'approved' AND id != %s ORDER BY RANDOM() LIMIT 1",
-                (current_id,)
-            )
+            cur.execute("SELECT text FROM confessions WHERE id = %s", (conf_id,))
             row = cur.fetchone()
-            
-            if not row:
-                cur.execute(
-                    "SELECT id, text FROM confessions WHERE status = 'approved' AND id = %s",
-                    (current_id,)
-                )
-                row = cur.fetchone()
 
     if not row:
-        await callback.answer("Больше историй нет!", show_alert=True)
+        await callback.answer("Ошибка истории!", show_alert=True)
         return
 
-    conf_id, text = row
-    safe_text = html.escape(text)  # Экранирование спецсимволов
-    
+    text = row[0]
+    await state.update_data(current_index=index)
+    safe_text = html.escape(text)
+
     try:
         await callback.message.edit_text(
             f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
-            reply_markup=get_feed_keyboard(conf_id),
+            reply_markup=get_feed_keyboard(),
             parse_mode="HTML",
         )
     except Exception:
         pass
     await callback.answer()
 
-# Админ-панель
 @router.message(Command(commands=["admin"]))
 async def admin_panel(message: Message):
     if message.from_user.id != ADMIN_ID:
