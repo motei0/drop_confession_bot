@@ -212,7 +212,7 @@ def get_feed_keyboard(conf_id: int):
         ]
     )
 
-# Просмотр ленты (открывает самую последнюю/свежую историю)
+# Просмотр ленты (открывает случайную одобренную историю)
 @router.message(F.text == "📖 Читать ленту")
 async def read_feed_msg(message: Message, state: FSMContext):
     await state.clear()
@@ -220,7 +220,7 @@ async def read_feed_msg(message: Message, state: FSMContext):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 1"
+                "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY RANDOM() LIMIT 1"
             )
             row = cur.fetchone()
 
@@ -237,7 +237,7 @@ async def read_feed_msg(message: Message, state: FSMContext):
         parse_mode="HTML",
     )
 
-# Перелистывание: Следующая история (более старые по ID)
+# Перелистывание: Следующая случайная история (исключая текущую)
 @router.callback_query(F.data.startswith("feed_next_"))
 async def feed_next(callback: CallbackQuery):
     try:
@@ -248,16 +248,18 @@ async def feed_next(callback: CallbackQuery):
     
     with get_db() as conn:
         with conn.cursor() as cur:
+            # Берем случайную, но стараемся не показывать ту же самую сразу, если в базе больше 1 истории
             cur.execute(
-                "SELECT id, text FROM confessions WHERE status = 'approved' AND id < %s ORDER BY id DESC LIMIT 1",
+                "SELECT id, text FROM confessions WHERE status = 'approved' AND id != %s ORDER BY RANDOM() LIMIT 1",
                 (current_id,)
             )
             row = cur.fetchone()
             
-            # Если дошли до конца, переходим циклично на самую первую (свежую)
+            # Если в базе всего 1 история, показываем её же
             if not row:
                 cur.execute(
-                    "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 1"
+                    "SELECT id, text FROM confessions WHERE status = 'approved' AND id = %s",
+                    (current_id,)
                 )
                 row = cur.fetchone()
 
@@ -278,7 +280,7 @@ async def feed_next(callback: CallbackQuery):
         pass
     await callback.answer()
 
-# Перелистывание: Предыдущая история (более новые по ID)
+# Перелистывание: Предыдущая случайная история (исключая текущую)
 @router.callback_query(F.data.startswith("feed_prev_"))
 async def feed_prev(callback: CallbackQuery):
     try:
@@ -290,15 +292,15 @@ async def feed_prev(callback: CallbackQuery):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, text FROM confessions WHERE status = 'approved' AND id > %s ORDER BY id ASC LIMIT 1",
+                "SELECT id, text FROM confessions WHERE status = 'approved' AND id != %s ORDER BY RANDOM() LIMIT 1",
                 (current_id,)
             )
             row = cur.fetchone()
             
-            # Если дошли до начала, переходим циклично на самую старую
             if not row:
                 cur.execute(
-                    "SELECT id, text FROM confessions WHERE status = 'approved' ORDER BY id ASC LIMIT 1"
+                    "SELECT id, text FROM confessions WHERE status = 'approved' AND id = %s",
+                    (current_id,)
                 )
                 row = cur.fetchone()
 
