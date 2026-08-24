@@ -89,6 +89,10 @@ async def start_writing_text(message: Message, state: FSMContext):
 @router.message(ConfessionState.waiting_for_text)
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
     text = message.text
+    user_id = message.from_user.id
+    
+    # Достаем юзернейм (если есть)
+    username = f"@{message.from_user.username}" if message.from_user.username else "Отсутствует"
 
     # Безопасное сохранение в PostgreSQL (Neon) с отловом ошибок
     try:
@@ -96,7 +100,7 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO confessions (user_id, text) VALUES (%s, %s) RETURNING id",
-                    (message.from_user.id, text),
+                    (user_id, text),
                 )
                 conf_id = cur.fetchone()[0]
                 conn.commit()
@@ -117,7 +121,7 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     # Экранируем текст для безопасной отправки админу через HTML
     safe_text_for_admin = html.escape(text)
 
-    # Отправка админу на проверку
+    # Отправка админу на проверку (включая юзернейм и ID автора)
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -129,7 +133,10 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"<b>Новая исповедь #{conf_id}:</b>\n\n{safe_text_for_admin}",
+            f"<b>Новая исповедь #{conf_id}</b>\n"
+            f"👤 <b>Автор:</b> {username}\n"
+            f"🆔 <b>ID:</b> <code>{user_id}</code>\n\n"
+            f"{safe_text_for_admin}",
             reply_markup=admin_kb,
             parse_mode="HTML",
         )
