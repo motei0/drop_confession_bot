@@ -119,7 +119,7 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"<b>Новая исповедь #{conf_id}</b>\n"
+            f"<b>Новая исповедь</b>\n"
             f"👤 <b>Автор:</b> {username}\n"
             f"🆔 <b>ID:</b> <code>{user_id}</code>\n\n"
             f"{safe_text_for_admin}",
@@ -191,7 +191,6 @@ def get_feed_keyboard():
         ]
     )
 
-# Открытие ленты (сбрасываем историю просмотров в FSM и берем первую рандомную)
 @router.message(F.text == "📖 Читать ленту")
 async def read_feed_msg(message: Message, state: FSMContext):
     with get_db() as conn:
@@ -205,33 +204,29 @@ async def read_feed_msg(message: Message, state: FSMContext):
 
     conf_id, text = row
     
-    # Сохраняем сессию просмотра в FSM
     await state.set_data({
-        "viewed_history": [conf_id],  # Список просмотренных ID по порядку
-        "current_index": 0           # Текущая позиция в этом списке
+        "viewed_history": [conf_id],
+        "current_index": 0
     })
 
     safe_text = html.escape(text)
     await message.answer(
-        f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
+        f"🤫 <b>Исповедь</b>\n\n{safe_text}",
         reply_markup=get_feed_keyboard(),
         parse_mode="HTML",
     )
 
-# Кнопка «Вперед» (следующая случайная история без повторов)
 @router.callback_query(F.data == "feed_next")
 async def feed_next(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     viewed = data.get("viewed_history", [])
     index = data.get("current_index", 0)
 
-    # Если мы уже в самом конце истории просмотров — ищем новую рандомную, которой еще не было
     if index >= len(viewed) - 1:
         if not viewed:
             viewed = []
             index = -1
 
-        # Формируем запрос с исключением уже показанных ID
         with get_db() as conn:
             with conn.cursor() as cur:
                 if viewed:
@@ -251,7 +246,6 @@ async def feed_next(callback: CallbackQuery, state: FSMContext):
         viewed.append(conf_id)
         index = len(viewed) - 1
     else:
-        # Если пользователь уже листал назад и теперь идет вперед по уже просмотренным
         index += 1
         conf_id = viewed[index]
         
@@ -270,7 +264,7 @@ async def feed_next(callback: CallbackQuery, state: FSMContext):
 
     try:
         await callback.message.edit_text(
-            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
+            f"🤫 <b>Исповедь</b>\n\n{safe_text}",
             reply_markup=get_feed_keyboard(),
             parse_mode="HTML",
         )
@@ -278,14 +272,12 @@ async def feed_next(callback: CallbackQuery, state: FSMContext):
         pass
     await callback.answer()
 
-# Кнопка «Назад» (возврат к уже просмотренным ранее историям)
 @router.callback_query(F.data == "feed_prev")
 async def feed_prev(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     viewed = data.get("viewed_history", [])
     index = data.get("current_index", 0)
 
-    # Если двигаться назад больше некуда
     if index <= 0 or not viewed:
         await callback.answer("⚠️ Это первая история в текущем просмотре, дальше назад нельзя.", show_alert=True)
         return
@@ -308,7 +300,7 @@ async def feed_prev(callback: CallbackQuery, state: FSMContext):
 
     try:
         await callback.message.edit_text(
-            f"🤫 <b>Исповедь #{conf_id}</b>\n\n{safe_text}",
+            f"🤫 <b>Исповедь</b>\n\n{safe_text}",
             reply_markup=get_feed_keyboard(),
             parse_mode="HTML",
         )
@@ -336,7 +328,7 @@ async def admin_panel(message: Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_{conf_id}")]
         ])
-        await message.answer(f"#{conf_id}: {safe_display}", parse_mode="HTML", reply_markup=kb)
+        await message.answer(f"{safe_display}", parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("del_"))
 async def delete_from_admin(callback: CallbackQuery):
