@@ -14,10 +14,9 @@ import uvicorn
 TOKEN = "8926289462:AAEzYTMq_DdzNER_4AVMKVn1fC0vI2GKI2U"
 ADMIN_ID = 1449427026  # Твой Telegram ID для модерации
 
-# Словарь для кулдауна отправки исповедей (user_id: timestamp)
-cooldowns = {}
-# Словарь для защиты от спама кнопками ленты (user_id: timestamp)
-click_cooldowns = {}
+# Словари для кулдаунов
+cooldowns = {}          # Кулдаун на отправку исповедей (user_id: timestamp)
+click_cooldowns = {}    # Защита от спама кнопками ленты (user_id: timestamp)
 
 # Подключение к Neon.tech через переменную окружения DATABASE_URL в Render
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -83,10 +82,16 @@ async def start_writing_text(message: Message, state: FSMContext):
     user_id = message.from_user.id
     now = time.time()
     
-    # Проверка кулдауна (30 секунд)
+    # Проверка кулдауна отправки (30 секунд)
     if user_id in cooldowns and now - cooldowns[user_id] < 30:
         left = int(30 - (now - cooldowns[user_id]))
         await message.answer(f"⏳ Подожди еще {left} сек., прежде чем отправлять новую исповедь.")
+        return
+
+    # Если пользователь уже в процессе написания
+    current_state = await state.get_state()
+    if current_state == ConfessionState.waiting_for_text.state:
+        await message.answer("Ты уже в режиме создания истории. Просто отправь её следующим сообщением или нажми «❌ Отменить».")
         return
 
     await state.set_state(ConfessionState.waiting_for_text)
@@ -100,16 +105,24 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     now = time.time()
 
+    # Жёсткая проверка кулдауна первым делом
     if user_id in cooldowns and now - cooldowns[user_id] < 30:
         left = int(30 - (now - cooldowns[user_id]))
         await message.answer(f"⏳ Подожди еще {left} сек., прежде чем отправлять новую исповедь.")
+        return
+
+    # Обработка кнопок меню во время ввода
+    if message.text in ["🤫 Написать исповедь", "📖 Читать ленту"]:
+        return
+    if message.text == "❌ Отменить":
         await state.clear()
+        await message.answer("Действие отменено.", reply_markup=get_main_menu())
         return
 
     text = message.text
     username = f"@{message.from_user.username}" if message.from_user.username else "Отсутствует"
 
-    # Записываем время последней отправки
+    # Устанавливаем кулдаун сразу при успешном принятии текста
     cooldowns[user_id] = now
 
     try:
@@ -247,7 +260,7 @@ async def feed_next(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     now = time.time()
 
-    # Защита от спама кнопками (интервал 0.6 секунды)
+    # Защита от спама кнопками ленты (интервал 0.6 секунды)
     if user_id in click_cooldowns and now - click_cooldowns[user_id] < 0.6:
         await callback.answer("⚠️ Не так быстро!", show_alert=False)
         return
@@ -312,7 +325,7 @@ async def feed_prev(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     now = time.time()
 
-    # Защита от спама кнопками (интервал 0.6 секунды)
+    # Защита от спама кнопками ленты (интервал 0.6 секунды)
     if user_id in click_cooldowns and now - click_cooldowns[user_id] < 0.6:
         await callback.answer("⚠️ Не так быстро!", show_alert=False)
         return
