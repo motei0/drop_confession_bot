@@ -288,6 +288,9 @@ async def feed_next(callback: CallbackQuery, state: FSMContext):
     viewed = data.get("viewed_history", [])
     index = data.get("current_index", 0)
 
+    text = None
+    conf_id = None
+
     if index >= len(viewed) - 1:
         if not viewed:
             viewed = []
@@ -312,18 +315,33 @@ async def feed_next(callback: CallbackQuery, state: FSMContext):
         viewed.append(conf_id)
         index = len(viewed) - 1
     else:
-        index += 1
-        conf_id = viewed[index]
+        while index < len(viewed) - 1:
+            index += 1
+            conf_id = viewed[index]
+            
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT text FROM confessions WHERE id = %s AND status = 'approved'", (conf_id,))
+                    row = cur.fetchone()
+            
+            if row:
+                text = row[0]
+                break
         
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT text FROM confessions WHERE id = %s", (conf_id,))
-                row = cur.fetchone()
-        
-        if not row:
-            await callback.answer("Ошибка истории!", show_alert=True)
-            return
-        text = row[0]
+        if not text:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    format_strings = ','.join(['%s'] * len(viewed))
+                    query = f"SELECT id, text FROM confessions WHERE status = 'approved' AND id NOT IN ({format_strings}) ORDER BY RANDOM() LIMIT 1"
+                    cur.execute(query, tuple(viewed))
+                    row = cur.fetchone()
+            
+            if not row:
+                await callback.answer("🎉 Больше нет новых историй!", show_alert=True)
+                return
+            conf_id, text = row
+            viewed.append(conf_id)
+            index = len(viewed) - 1
 
     await state.update_data(viewed_history=viewed, current_index=index)
     safe_text = html.escape(text)
@@ -357,19 +375,24 @@ async def feed_prev(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⚠️ Это первая история в текущем просмотре, дальше назад нельзя.", show_alert=True)
         return
 
-    index -= 1
-    conf_id = viewed[index]
+    text = None
+    while index > 0:
+        index -= 1
+        conf_id = viewed[index]
 
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT text FROM confessions WHERE id = %s", (conf_id,))
-            row = cur.fetchone()
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT text FROM confessions WHERE id = %s AND status = 'approved'", (conf_id,))
+                row = cur.fetchone()
 
-    if not row:
-        await callback.answer("Ошибка истории!", show_alert=True)
+        if row:
+            text = row[0]
+            break
+
+    if not text:
+        await callback.answer("⚠️ Предыдущая история была удалена модератором.", show_alert=True)
         return
 
-    text = row[0]
     await state.update_data(current_index=index)
     safe_text = html.escape(text)
 
@@ -383,30 +406,116 @@ async def feed_prev(callback: CallbackQuery, state: FSMContext):
         pass
     await callback.answer()
 
+# --- ПАНЕЛЬ АДМИНИСТРАТОРА С ПАГИНАЦИЕЙ ---
+
 @router.message(Command(commands=["admin"]))
 async def admin_panel(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
+    await show_admin_page(message, page=0)
+
+async def show_admin_page(message_or_callback, page: int, is_callback: bool = False):
+    limit = 5  # Количество историй на одной странице
+    offset = page * limit
 
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, text FROM confessions LIMIT 20")
+            cur.execute("SELECT COUNT(*) FROM confessions")
+            total_count = cur.fetchone()[0]
+
+            cur.execute("SELECT id, text, status FROM confessions ORDER BY id DESC LIMIT %s OFFSET %s", (limit, offset))
             rows = cur.fetchall()
 
     if not rows:
-        await message.answer("База данных пуста.")
+        text_msg = "📭 База данных пуста."
+        if is_callback:
+            await message_or_callback.message.edit_text(text_msg)
+        else:
+            await message_or_callback.answer(text_msg)
         return
 
-    for conf_id, text in rows:
-        display_text = (text[:30] + '..') if len(text) > 30 else text
+    keyboard = []
+    
+    for conf_id, text, status in rows:
+        display_text = (text[:25] + '..') if len(text) > 25 else text
         safe_display = html.escape(display_text)
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_{conf_id}")]
+        status_icon = "⏳" if status == 'pending' else ("✅" if status == 'approved' else "❌")
+        
+        keyboard.append([
+            InlineKeyboardButton(text=f"{status_icon} ID {conf_id}: {safe_display}", callback_data=f"admin_view_{conf_id}")
         ])
-        await message.answer(f"{safe_display}", parse_mode="HTML", reply_markup=kb)
+
+    max_page = max(0, (total_count - 1) // limit)
+    pagination_buttons = []
+    if page > 0:
+        pagination_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_page_{page - 1}"))
+    if page < max_page:
+        pagination_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"admin_page_{page + 1}"))
+    
+    if pagination_buttons:
+        keyboard.append(pagination_buttons)
+
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    text_msg = f"🛠 <b>Панель администратора</b> (Страница {page + 1} из {max_page + 1}):"
+
+    if is_callback:
+        try:
+            await message_or_callback.message.edit_text(text_msg, reply_markup=reply_markup, parse_mode="HTML")
+        except Exception:
+            pass
+    else:
+        await message_or_callback.answer(text_msg, reply_markup=reply_markup, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("admin_page_"))
+async def admin_turn_page(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    page = int(callback.data.split("_")[2])
+    await show_admin_page(callback, page=page, is_callback=True)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_view_"))
+async def admin_view_single(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    conf_id = int(callback.data.split("_")[2])
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, text, status FROM confessions WHERE id = %s", (conf_id,))
+            row = cur.fetchone()
+
+    if not row:
+        await callback.answer("⚠️ Эта исповедь уже удалена или не существует.", show_alert=True)
+        return
+
+    user_id, text, status = row
+    safe_text = html.escape(text)
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить эту исповедь", callback_data=f"del_{conf_id}")],
+            [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="admin_page_0")]
+        ]
+    )
+
+    try:
+        await callback.message.edit_text(
+            f"🔍 <b>Исповедь ID:</b> <code>{conf_id}</code>\n"
+            f"👤 <b>Автор ID:</b> <code>{user_id}</code>\n"
+            f"📌 <b>Статус:</b> <code>{status}</code>\n\n"
+            f"{safe_text}",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("del_"))
 async def delete_from_admin(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
     conf_id = int(callback.data.split("_")[1])
     with get_db() as conn:
         with conn.cursor() as cur:
