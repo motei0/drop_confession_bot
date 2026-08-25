@@ -16,6 +16,8 @@ ADMIN_ID = 1449427026  # Твой Telegram ID для модерации
 
 # Словарь для кулдауна отправки исповедей (user_id: timestamp)
 cooldowns = {}
+# Словарь для защиты от спама кнопками ленты (user_id: timestamp)
+click_cooldowns = {}
 
 # Подключение к Neon.tech через переменную окружения DATABASE_URL в Render
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -242,6 +244,15 @@ async def read_feed_msg(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "feed_next")
 async def feed_next(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    now = time.time()
+
+    # Защита от спама кнопками (интервал 0.6 секунды)
+    if user_id in click_cooldowns and now - click_cooldowns[user_id] < 0.6:
+        await callback.answer("⚠️ Не так быстро!", show_alert=False)
+        return
+    click_cooldowns[user_id] = now
+
     data = await state.get_data()
     viewed = data.get("viewed_history", [])
     index = data.get("current_index", 0)
@@ -298,6 +309,15 @@ async def feed_next(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "feed_prev")
 async def feed_prev(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    now = time.time()
+
+    # Защита от спама кнопками (интервал 0.6 секунды)
+    if user_id in click_cooldowns and now - click_cooldowns[user_id] < 0.6:
+        await callback.answer("⚠️ Не так быстро!", show_alert=False)
+        return
+    click_cooldowns[user_id] = now
+
     data = await state.get_data()
     viewed = data.get("viewed_history", [])
     index = data.get("current_index", 0)
