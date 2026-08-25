@@ -96,7 +96,7 @@ async def start_writing_text(message: Message, state: FSMContext):
 
     await state.set_state(ConfessionState.waiting_for_text)
     await message.answer(
-        "Напиши свою историю, секрет или факап одним сообщением. Как только модератор ее проверит, она попадет в ленту.",
+        "Напиши свою историю, секрет или факап одним сообщением (от 50 до 2500 символов). Как только модератор ее проверит, она попадет в ленту.",
         reply_markup=get_cancel_menu()
     )
 
@@ -120,6 +120,24 @@ async def process_confession(message: Message, state: FSMContext, bot: Bot):
         return
 
     text = message.text
+
+    # Проверка лимита символов (от 50 до 2500)
+    if len(text) < 50:
+        await message.answer(
+            f"❌ Твоя исповедь слишком короткая ({len(text)} из мин. 50 символов).\n"
+            "Пожалуйста, расскажи историю подробнее.",
+            reply_markup=get_cancel_menu()
+        )
+        return
+
+    if len(text) > 2500:
+        await message.answer(
+            f"❌ Твоя исповедь слишком длинная ({len(text)} из макс. 2500 символов).\n"
+            "Пожалуйста, немного сократи текст.",
+            reply_markup=get_cancel_menu()
+        )
+        return
+
     username = f"@{message.from_user.username}" if message.from_user.username else "Отсутствует"
 
     # Устанавливаем кулдаун сразу при успешном принятии текста
