@@ -1,5 +1,6 @@
 import os
 import html
+import time
 import asyncio
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
@@ -12,6 +13,11 @@ import uvicorn
 
 TOKEN = "8926289462:AAEzYTMq_DdzNER_4AVMKVn1fC0vI2GKI2U"
 ADMIN_ID = 1449427026  # Твой Telegram ID для модерации
+
+# Словарь для кулдауна отправки исповедей (user_id: timestamp)
+cooldowns = {}
+# Словарь для защиты от спама кликами (user_id: timestamp)
+click_cooldowns = {}
 
 # Подключение к Neon.tech через переменную окружения DATABASE_URL в Render
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -74,7 +80,16 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @router.message(F.text == "🤫 Написать исповедь")
 async def start_writing_text(message: Message, state: FSMContext):
-    await state.set_state(ConfessionState.waiting_for_text)
+    user_id = message.from_user.id
+    now = time.time()
+    
+    # Проверка кулдауна на отправку (30 секунд)
+    if user_id in cooldowns and now - cooldowns[user_id] < 30:
+        left = int(30 - (now - cooldowns[user_id]))
+        await message.answer(f"⏳ Подожди еще {left} сек., прежде чем отправлять новую исповедь.")
+        return
+
+    await message.set_state(ConfessionState.waiting_for_text)
     await message.answer(
         "Напиши свою историю, секрет или факап одним сообщением. Как только модератор ее проверит, она попадет в ленту.",
         reply_markup=get_cancel_menu()
@@ -82,9 +97,21 @@ async def start_writing_text(message: Message, state: FSMContext):
 
 @router.message(ConfessionState.waiting_for_text)
 async def process_confession(message: Message, state: FSMContext, bot: Bot):
-    text = message.text
     user_id = message.from_user.id
+    now = time.time()
+
+    # Двойная проверка на всякий случай
+    if user_id in cooldowns and now - cooldowns[user_id] < 30:
+        left = int(30 - (now - cooldowns[user_id]))
+        await message.answer(f"⏳ Подожди еще {left} сек., прежде чем отправлять новую исповедь.")
+        await state.clear()
+        return
+
+    text = message.text
     username = f"@{message.from_user.username}" if message.from_user.username else "Отсутствует"
+
+    # Устанавливаем таймер кулдауна
+    cooldowns[user_id] = now
 
     try:
         with get_db() as conn:
@@ -218,6 +245,15 @@ async def read_feed_msg(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "feed_next")
 async def feed_next(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    now = time.time()
+
+    # Защита от слишком быстрого закликивания кнопок (антиспам 0.8 сек)
+    if user_id in click_cooldowns and now - click_cooldowns[user_id] < 0.8:
+        await callback.answer("⚠️ Не так быстро, бро!", show_alert=False)
+        return
+    click_cooldowns[user_id] = now
+
     data = await state.get_data()
     viewed = data.get("viewed_history", [])
     index = data.get("current_index", 0)
@@ -274,6 +310,14 @@ async def feed_next(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "feed_prev")
 async def feed_prev(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    now = time.time()
+
+    if user_id in click_cooldowns and now - click_cooldowns[user_id] < 0.8:
+        await callback.answer("⚠️ Не так быстро, бро!", show_alert=False)
+        return
+    click_cooldowns[user_id] = now
+
     data = await state.get_data()
     viewed = data.get("viewed_history", [])
     index = data.get("current_index", 0)
